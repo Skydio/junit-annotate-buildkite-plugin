@@ -19,7 +19,7 @@ failure_format = 'classname' if !failure_format || failure_format.empty?
 
 report_slowest = ENV['BUILDKITE_PLUGIN_JUNIT_ANNOTATE_REPORT_SLOWEST'].to_i
 
-class Failure < Struct.new(:name, :unit_name, :body, :job, :type, :message)
+class Failure < Struct.new(:name, :unit_name, :body, :job, :type, :message, :system_out)
 end
 
 class Timing < Struct.new(:name, :unit_name, :time)
@@ -29,6 +29,15 @@ junit_report_files = Dir.glob(File.join(junits_dir, "**", "*"), File::FNM_DOTMAT
 testcases = 0
 failures = []
 timings = []
+
+def system_out_content(testsuite)
+  system_out = testsuite.elements['system-out']
+  if system_out && !system_out.texts.empty?
+    system_out.texts.map(&:value).join.strip
+  else
+    nil
+  end
+end
 
 def text_content(element)
   # Handle mulptiple CDATA/text children elements
@@ -58,17 +67,21 @@ junit_report_files.sort.each do |file|
   xml = File.read(file)
   doc = REXML::Document.new(xml)
 
-  REXML::XPath.each(doc, '//testsuite/testcase') do |testcase|
-    testcases += 1
-    name = testcase.attributes['name'].to_s
-    unit_name = testcase.attributes[failure_format].to_s
-    time = testcase.attributes['time'].to_f
-    timings << Timing.new(name, unit_name, time)
-    testcase.elements.each("failure") do |failure|
-      failures << Failure.new(name, unit_name, text_content(failure), job, :failure, message_content(failure))
-    end
-    testcase.elements.each("error") do |error|
-      failures << Failure.new(name, unit_name, text_content(error), job, :error, message_content(error))
+  REXML::XPath.each(doc, '//testsuite') do |testsuite|
+    system_out = system_out_content(testsuite)
+
+    REXML::XPath.each(testsuite, 'testcase') do |testcase|
+      testcases += 1
+      name = testcase.attributes['name'].to_s
+      unit_name = testcase.attributes[failure_format].to_s
+      time = testcase.attributes['time'].to_f
+      timings << Timing.new(name, unit_name, time)
+      testcase.elements.each("failure") do |failure|
+        failures << Failure.new(name, unit_name, text_content(failure), job, :failure, message_content(failure), system_out)
+      end
+      testcase.elements.each("error") do |error|
+        failures << Failure.new(name, unit_name, text_content(error), job, :error, message_content(error), system_out)
+      end
     end
   end
 end
@@ -91,6 +104,9 @@ failures.each do |failure|
   end
   if failure.body
     puts "<pre><code>#{CGI.escapeHTML(failure.body.chomp.strip)}</code></pre>\n\n"
+  end
+  if failure.system_out
+    puts "<pre><code>#{CGI.escapeHTML(failure.system_out.chomp.strip)}</code></pre>\n\n"
   end
   if failure.job
     puts "in <a href=\"##{failure.job}\">Job ##{failure.job}</a>"
